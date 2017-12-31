@@ -18,8 +18,10 @@
  *
  *  Version history
 */
-public static String version() { return "v0.2.0ff.20171129" }
+public static String version() { return "v0.2.101.20171227" }
 /*
+ *	12/27/2017 >>> v0.2.101.20171227 - BETA M2 - Fixed 172.x.x.x web requests thanks to @tbam, fixed array subscripting with 0.0 decimal value as in a for loop using $index
+ *	12/11/2017 >>> v0.2.100.20171211 - BETA M2 - Replaced the scheduler-based timeout recovery handling to ease up on resource usage
  *	11/29/2017 >>> v0.2.0ff.20171129 - BETA M2 - Fixed missing conditions and triggers for several device attributes, new comparison group for binary files
  *	11/09/2017 >>> v0.2.0fe.20171109 - BETA M2 - Fixed on events subscription for global and superglobal variables
  *	11/05/2017 >>> v0.2.0fd.20171105 - BETA M2 - Further DST fixes
@@ -759,15 +761,23 @@ def deviceHandler(event) {
 }
 
 def timeHandler(event, recovery = false) {
+try {
 	handleEvents([date: new Date(event.t), device: location, name: 'time', value: event.t, schedule: event, recovery: recovery])
+    } catch (Exception e) {
+    error "Unexpected error:", null, null, e
+    }
 }
 
+//new and improved timeout recovery management
+def timeoutRecoveryHandler_webCoRE(event) {
+	timeHandler([t:now()], true)
+}
+
+/*
 def timeRecoveryHandler(event) {
 	timeHandler(event, true)
-	//def event = [date: new Date(), device: location, name: 'time', value: now(), schedule: [t: 0, s: 0, i: -9]]
-    //executeEvent(rtData, event)
-	//processSchedules rtData, true
 }
+*/
 
 def executeHandler(event) {
 	handleEvents([date: event.date, device: location, name: 'execute', value: event.value, jsonData: event.jsonData])
@@ -776,7 +786,7 @@ def executeHandler(event) {
 //entry point for all events
 def handleEvents(event) {
 	//cancel all pending jobs, we'll handle them later
-	unschedule(timeHandler)
+	//unschedule(timeHandler)
     if (!state.active) return
 	def startTime = now()
     state.lastExecuted = startTime
@@ -795,7 +805,8 @@ def handleEvents(event) {
     	return;
     }
     checkVersion(rtData)
-	runIn(30, timeRecoveryHandler)
+    setTimeoutRecoveryHandler('timeoutRecoveryHandler_webCoRE')
+	//runIn(30, timeRecoveryHandler)
     if (rtData.semaphoreDelay) {
     	warn "Piston waited at a semaphore for ${rtData.semaphoreDelay}ms", rtData
     }
@@ -1121,11 +1132,11 @@ private processSchedules(rtData, scheduleJob = false) {
         	rtData.stats.nextSchedule = next.t
         	if (rtData.logging) info "Setting up scheduled job for ${formatLocalTime(next.t)} (in ${t}s)" + (schedules.size() > 1 ? ', with ' + (schedules.size() - 1).toString() + ' more job' + (schedules.size() > 2 ? 's' : '') + ' pending' : ''), rtData
         	runIn(t, timeHandler, [data: next])
-        	runIn(t + 30, timeRecoveryHandler, [data: next])
+        	//runIn(t + 30, timeRecoveryHandler, [data: next])
     	} else {
 	    	rtData.stats.nextSchedule = 0
             //remove the recovery
-    		unschedule(timeRecoveryHandler)
+    		//unschedule(timeRecoveryHandler)
 	    }
     }
     if (rtData.piston.o?.pep) atomicState.schedules = schedules
@@ -1796,14 +1807,14 @@ private scheduleTimer(rtData, timer, long lastRun = 0) {
     lastRun = lastRun ? utcToLocalTime(lastRun) : rightNow
     long nextSchedule = lastRun
 
-    if (lastRun >= rightNow) {
+    if (lastRun > rightNow) {
     	//sometimes ST runs timers early, so we need to make sure we're at least in the near future
     	rightNow = lastRun + 1
     }
 
     if (intervalUnit == 'h') {
     	long min = cast(rtData, timer.lo.om, 'long')
-    	nextSchedule = (long) 3600000 * (Math.floor(nextSchedule / 3600000) - 1) + (min * 60000)
+    	nextSchedule = (long) 3600000 * Math.floor(nextSchedule / 3600000) + (min * 60000)
     }
 
     //next date
@@ -3207,7 +3218,7 @@ private long vcmd_httpRequest(rtData, device, params) {
 	def internal = uri.startsWith("10.") || uri.startsWith("192.168.")
 	if ((!internal) && uri.startsWith("172.")) {
 		//check for the 172.16.x.x/12 class
-		def b = uri.substring(4,2)
+		def b = uri.substring(4,6)
 		if (b.isInteger()) {
 			b = b.toInteger()
 			internal = (b >= 16) && (b <= 31)
@@ -5051,7 +5062,9 @@ private Map getVariable(rtData, name) {
         	Map indirectVar = getVariable(rtData, var.index)
             //indirect variable addressing
             if (indirectVar && (indirectVar.t != 'error')) {
-            	var.index = cast(rtData, indirectVar.t == 'decimal' ? cast(rtData, indirectVar.v, 'integer', indirectVar.t) : indirectVar.v, 'string', indirectVar.t)
+                def value = indirectVar.t == 'decimal' ? cast(rtData, indirectVar.v, 'integer', indirectVar.t) : indirectVar.v
+                def dataType = indirectVar.t == 'decimal' ? 'integer' : indirectVar.t
+                var.index = cast(rtData, value, 'string', dataType)
             }
         	result.v = result.v[var.index]
 //        } else {
